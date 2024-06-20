@@ -15,12 +15,14 @@
 """
 Models init
 """
+
 from . import (
     albert,
     align,
     altclip,
     audio_spectrogram_transformer,
     auto,
+    owlv2,
     autoformer,
     baichuan,
     bark,
@@ -74,6 +76,7 @@ from . import (
     esm,
     ernie,
     ernie_m,
+    falcon,
     fastspeech2_conformer,
     chatglm,
     chatglm2,
@@ -99,6 +102,7 @@ from . import (
     layoutlm,
     layoutlmv2,
     led,
+    lilt,
     llama,
     llava,
     llava_next,
@@ -114,6 +118,7 @@ from . import (
     mixtral,
     mobilebert,
     mobilenet_v1,
+    mobilenet_v2,
     mobilevit,
     mpnet,
     mpt,
@@ -145,9 +150,12 @@ from . import (
     seamless_m4t_v2,
     segformer,
     seggpt,
+    sew,
+    sew_d,
     speech_encoder_decoder,
     speecht5,
     stablelm,
+    splinter,
     squeezebert,
     starcoder2,
     swiftformer,
@@ -178,6 +186,7 @@ from . import (
     xlnet,
 )
 
+from .owlv2 import *
 from .albert import *
 from .align import *
 from .altclip import *
@@ -239,6 +248,7 @@ from .ernie_m import *
 from .chatglm import *
 from .chatglm2 import *
 from .chatglm3 import *
+from .falcon import *
 from .flava import *
 from .funnel import *
 from .fastspeech2_conformer import *
@@ -261,6 +271,7 @@ from .jetmoe import *
 from .layoutlm import *
 from .layoutlmv2 import *
 from .led import *
+from .lilt import *
 from .llama import *
 from .llava import *
 from .llava_next import *
@@ -276,6 +287,7 @@ from .mistral import *
 from .mixtral import *
 from .mobilebert import *
 from .mobilenet_v1 import *
+from .mobilenet_v2 import *
 from .mobilevit import *
 from .mpnet import *
 from .mpt import *
@@ -307,9 +319,12 @@ from .seamless_m4t import *
 from .seamless_m4t_v2 import *
 from .segformer import *
 from .seggpt import *
+from .sew import *
+from .sew_d import *
 from .speech_encoder_decoder import *
 from .speecht5 import *
 from .stablelm import *
+from .splinter import *
 from .squeezebert import *
 from .starcoder2 import *
 from .swiftformer import *
@@ -399,6 +414,7 @@ __all__.extend(ernie.__all__)
 __all__.extend(ernie_m.__all__)
 __all__.extend(esm.__all__)
 __all__.extend(chatglm.__all__)
+__all__.extend(falcon.__all__)
 __all__.extend(flava.__all__)
 __all__.extend(funnel.__all__)
 __all__.extend(fastspeech2_conformer.__all__)
@@ -423,6 +439,7 @@ __all__.extend(jetmoe.__all__)
 __all__.extend(layoutlm.__all__)
 __all__.extend(layoutlmv2.__all__)
 __all__.extend(led.__all__)
+__all__.extend(lilt.__all__)
 __all__.extend(llama.__all__)
 __all__.extend(llava.__all__)
 __all__.extend(llava_next.__all__)
@@ -438,6 +455,7 @@ __all__.extend(mistral.__all__)
 __all__.extend(mixtral.__all__)
 __all__.extend(mobilebert.__all__)
 __all__.extend(mobilenet_v1.__all__)
+__all__.extend(mobilenet_v2.__all__)
 __all__.extend(mobilevit.__all__)
 __all__.extend(mpnet.__all__)
 __all__.extend(mpt.__all__)
@@ -469,12 +487,16 @@ __all__.extend(seamless_m4t.__all__)
 __all__.extend(seamless_m4t_v2.__all__)
 __all__.extend(segformer.__all__)
 __all__.extend(seggpt.__all__)
+__all__.extend(sew.__all__)
+__all__.extend(sew_d.__all__)
 __all__.extend(speech_encoder_decoder.__all__)
 __all__.extend(speecht5.__all__)
 __all__.extend(stablelm.__all__)
+__all__.extend(splinter.__all__)
 __all__.extend(squeezebert.__all__)
 __all__.extend(starcoder2.__all__)
 __all__.extend(swiftformer.__all__)
+__all__.extend(owlv2.__all__)
 __all__.extend(swin.__all__)
 __all__.extend(switch_transformers.__all__)
 __all__.extend(swin2sr.__all__)
