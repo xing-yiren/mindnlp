@@ -54,6 +54,8 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("bros", "BrosConfig"),
         ("camembert", "CamembertConfig"),
         ("canine", "CanineConfig"),
+        ("chinese_clip", "ChineseCLIPConfig"),
+        ("chinese_clip_vision_model", "ChineseCLIPVisionConfig"),
         ("chatglm", "ChatGLMConfig"),
         ("chatglm2", "ChatGLM2Config"),
         ("chatglm3", "ChatGLM3Config"),
@@ -80,6 +82,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("deberta-v2", "DebertaV2Config"),
         ("deepseek_v2", "DeepseekV2Config"),
         ("detr", "DetrConfig"),
+        ("depth_anything", "DepthAnythingConfig"),
         ("deta", "DetaConfig"),
         ("dinov2", "Dinov2Config"),
         ("distilbert", "DistilBertConfig"),
@@ -142,6 +145,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("minicpm3", "MiniCPM3Config"),
         ("mistral", "MistralConfig"),
         ("mixtral", "MixtralConfig"),
+        ("mllama", "MllamaConfig"),
         ("mobilevit", "MobileViTConfig"),
         ("mobilenet_v1", "MobileNetV1Config"),
         ("mobilenet_v2", "MobileNetV2Config"),
@@ -203,6 +207,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("udop", "UdopConfig"),
         ("upernet", "UPerNetConfig"),
         ("umt5", "UMT5Config"),
+        ("unispeech", "UniSpeechConfig"),
         ("unispeech-sat", "UniSpeechSatConfig"),
         ("univnet", "UnivNetConfig"),
         ("videomae", "VideoMAEConfig"),
@@ -234,7 +239,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
 
 CONFIG_ARCHIVE_MAP_MAPPING_NAMES = OrderedDict(
     [
-        # Add archive maps here)
+        # Add archive maps here
         ("albert", "ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP"),
         ("align", "ALIGN_PRETRAINED_CONFIG_ARCHIVE_MAP"),
         ("altclip", "ALTCLIP_PRETRAINED_CONFIG_ARCHIVE_MAP"),
@@ -485,6 +490,7 @@ MODEL_NAMES_MAPPING = OrderedDict(
         ("camembert", "CamemBERT"),
         ("canine", "CANINE"),
         ("chinese_clip", "Chinese-CLIP"),
+        ("chinese_clip_vision_model", "ChineseCLIPVisionModel"),
         ("chatglm", "ChatGLM"),
         ("chatglm2", "ChatGLM2"),
         ("chatglm3", "ChatGLM3"),
@@ -517,6 +523,8 @@ MODEL_NAMES_MAPPING = OrderedDict(
         ("deformable_detr", "Deformable DETR"),
         ("deepseek_v2", "Deepseek_v2"),
         ("deit", "DeiT"),
+        ("depth_anything", "Depth Anything"),
+        ("depth_anything_v2", "Depth Anything V2"),
         ("deplot", "DePlot"),
         ("deta", "DETA"),
         ("detr", "DETR"),
@@ -610,6 +618,7 @@ MODEL_NAMES_MAPPING = OrderedDict(
         ("minicpm3", "MiniCPM3"),
         ("mistral", "Mistral"),
         ("mixtral", "Mixtral"),
+        ("mllama", "Mllama"),
         ("mluke", "mLUKE"),
         ("mms", "MMS"),
         ("mobilebert", "MobileBERT"),
@@ -762,6 +771,7 @@ SPECIAL_MODEL_TYPE_TO_MODULE_NAME = OrderedDict(
         ("maskformer-swin", "maskformer"),
         ("clip_vision_model", "clip"),
         ("clipseg_vision_model", "clipseg"),
+        ("chinese_clip_vision_model", "chinese_clip"),
         ("xclip", "x_clip"),
     ]
 )

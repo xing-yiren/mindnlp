@@ -35,13 +35,14 @@ from dataclasses import dataclass
 
 import numpy as np
 import mindspore
-from mindspore import Tensor, Parameter
+from mindspore import Tensor
 from mindspore.train.serialization import _exec_save, _parse_ckpt_proto, tensor_to_np_type, tensor_to_ms_type
 
 import safetensors
 import safetensors.numpy
 from safetensors import deserialize
 
+from mindnlp.core.nn import Parameter
 from mindnlp.configs import SUPPORT_BF16
 from .nn import Module
 from ..utils import logging
@@ -792,8 +793,11 @@ def _rebuild_tensor_v2(storage, storage_offset, size, stride, requires_grad, bac
         array = array.astype(np.float16)
 
     if stride is not None and len(stride) > 1 and stride[0] == 1:
-        stride = tuple((s * 4 for s in stride))
-        array = np.lib.stride_tricks.as_strided(array, size, stride)
+        # stride = tuple((s * 4 for s in stride))
+        # # stride = tuple((s * 4 if s != 1 else s for s in stride))
+        # array = np.lib.stride_tricks.as_strided(array, size, stride)
+        order = "F"
+        array = array.reshape(size, order=order)
     else:
         order = "C"
         array = array.reshape(size, order=order)
@@ -1370,6 +1374,7 @@ def safe_load_file(filename):
         for k, v in safeview:
             dtype = _NP_TYPES[v["dtype"]]
             arr = np.frombuffer(v["data"], dtype=dtype).reshape(v["shape"])
+
             if (not SUPPORT_BF16 and dtype != bfloat16) or SUPPORT_BF16:
                 result[k] = Tensor.from_numpy(arr)
             else:

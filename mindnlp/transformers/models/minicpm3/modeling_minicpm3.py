@@ -82,7 +82,7 @@ def _make_causal_mask(
 
 def rms_layernorm(hidden: mindspore.Tensor, weight: mindspore.Tensor, eps: float):
     old_dtype = hidden.dtype
-    variance = hidden.to(mindspore.float32).pow(2).mean(dim=-1, keepdim=True)
+    variance = hidden.to(mindspore.float32).pow(2).mean(axis=-1, keep_dims=True)
     hidden = (hidden * ops.rsqrt(variance + eps)).to(old_dtype)
     return hidden * weight
 
@@ -934,8 +934,8 @@ class MiniCPM3ForCausalLM(MiniCPM3PreTrainedModel):
         position_ids = kwargs.get("position_ids", None)
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
+            position_ids = attention_mask.int().cumsum(-1) - 1
+            position_ids.masked_fill(attention_mask == 0, 1)
             if past_key_values:
                 position_ids = position_ids[:, -input_ids.shape[1] :]
 
