@@ -55,7 +55,7 @@ _CONFIG_FOR_DOC = "MiniCPM3Config"
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=mindspore.int32)
     indices = ops.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
-    max_seqlen_in_batch = seqlens_in_batch.max().item()
+    max_seqlen_in_batch = seqlens_in_batch.max()
     cu_seqlens = F.pad(ops.cumsum(seqlens_in_batch, dim=0, dtype=mindspore.int32), (1, 0))
     return (
         indices,
@@ -509,7 +509,7 @@ class MiniCPM3Attention(nn.Module):
                     "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
                     "with a layer index."
                 )
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx).item()
+            kv_seq_len += int(past_key_value.get_usable_length(kv_seq_len, self.layer_idx))
         
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
@@ -779,7 +779,7 @@ class MiniCPM3Model(MiniCPM3PreTrainedModel):
             use_legacy_cache = not isinstance(past_key_values, Cache)
             if use_legacy_cache:
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_usable_length(seq_length).item()
+            past_key_values_length = int(past_key_values.get_usable_length(seq_length))
 
         if cache_position is None:
             cache_position = ops.arange(
@@ -869,14 +869,14 @@ class MiniCPM3Model(MiniCPM3PreTrainedModel):
         # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
         # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
         # to infer the attention mask.
-        past_key_values_length = past_key_values.get_seq_length().item() if past_key_values is not None else 0
+        past_key_values_length = int(past_key_values.get_seq_length()) if past_key_values is not None else 0
         using_static_cache = isinstance(past_key_values, StaticCache)
 
         dtype = input_tensor.dtype
         min_dtype = float(ops.finfo(dtype).min)
         seq_length = input_tensor.shape[1]
         if using_static_cache:
-            target_length = past_key_values.get_max_length().item()
+            target_length = int(past_key_values.get_max_length())
         else:
             target_length = (
                 attention_mask.shape[-1]
