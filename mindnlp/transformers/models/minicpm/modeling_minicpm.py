@@ -32,9 +32,10 @@ from mindspore.common.initializer import initializer, Normal
 from mindnlp.core import nn, ops
 from mindnlp.core.nn import Parameter
 from mindnlp.core.nn import functional as F
+from mindnlp.configs import use_pyboost, SUPPORT_VIEW, ON_ORANGE_PI
 from mindnlp.utils import logging
 from ...activations import ACT2FN
-from ...cache_utils import Cache, DynamicCache
+from ...cache_utils import Cache, DynamicCache, StaticCache
 from ...modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
 from ...modeling_utils import PreTrainedModel
@@ -45,6 +46,67 @@ from .configuration_minicpm import MiniCPMConfig
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "MiniCPMConfig"
+
+def _prepare_4d_causal_attention_mask_with_cache_position(
+    attention_mask: mindspore.Tensor,
+    sequence_length: int,
+    target_length: int,
+    dtype: mindspore.dtype,
+    min_dtype: float,
+    cache_position: mindspore.Tensor,
+    batch_size: int,
+):
+    """
+    Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
+    `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
+
+    Args:
+        attention_mask (`mindspore.Tensor`):
+            A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape `(batch_size, 1, query_length, key_value_length)`.
+        sequence_length (`int`):
+            The sequence length being processed.
+        target_length (`int`):
+            The target length: when generating with static cache, the mask should be as long as the static cache, to account for the 0 padding, the part of the cache that is not filled yet.
+        min_dtype (`float`):
+            The minimum value representable with the dtype `dtype`.
+        cache_position (`mindspore.Tensor`):
+            Indices depicting the position of the input sequence tokens in the sequence.
+        batch_size (`mindspore.Tensor`):
+            Batch size.
+    """
+    if attention_mask is not None and attention_mask.ndim == 4:
+        # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
+        causal_mask = attention_mask
+    else:
+        causal_mask = ops.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype)
+        if sequence_length != 1:
+            causal_mask = ops.triu(causal_mask, diagonal=1)
+        causal_mask *= ops.arange(target_length) > cache_position.reshape(-1, 1)
+        # causal_mask = causal_mask[None, None, :, :].broadcast_to((batch_size, 1, -1, -1))
+        # speed up by unsqueeze
+        causal_mask = ops.broadcast_to(causal_mask.view(1, 1, *causal_mask.shape), (batch_size, 1, -1, -1))
+        if attention_mask is not None:
+            if SUPPORT_VIEW:
+                causal_mask = causal_mask.contiguous()  # copy to contiguous memory for in-place edit
+            else:
+                causal_mask = causal_mask.copy()
+            mask_length = attention_mask.shape[-1]
+            # padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
+            padding_mask = ops.narrow(causal_mask, -1, 0, mask_length) + attention_mask.view(attention_mask.shape[0], 1, 1, attention_mask.shape[1])
+            padding_mask = padding_mask == 0
+            # causal_mask[:, :, :, :mask_length] = ops.narrow(causal_mask, -1, 0, mask_length).masked_fill(
+            #     padding_mask, min_dtype
+            # )
+            if mask_length >= causal_mask.shape[-1]:
+                causal_mask = causal_mask.masked_fill(padding_mask, min_dtype)
+            else:
+                causal_mask = ops.cat(
+                                [ops.narrow(causal_mask, -1, 0, mask_length).masked_fill(padding_mask, min_dtype),
+                                ops.narrow(causal_mask, -1, mask_length, causal_mask.shape[-1] - mask_length)],
+                                dim=-1
+                            )
+
+    return causal_mask
 
 def rms_layernorm(hidden: mindspore.Tensor, weight: mindspore.Tensor, eps: float):
     """
@@ -600,7 +662,9 @@ class MiniCPMAttention(nn.Module):
         position_ids: Optional[mindspore.Tensor] = None,
         past_key_value: Optional[Cache] = None,
         output_attentions: bool = False,
+        cache_position: Optional[mindspore.Tensor] = None,
         use_cache: bool = False,
+        use_static_cache: bool = False,
         **kwargs,
     ) -> Tuple[mindspore.Tensor, Optional[mindspore.Tensor], Optional[Tuple[mindspore.Tensor]]]:
         '''
@@ -617,6 +681,9 @@ class MiniCPMAttention(nn.Module):
             past_key_value (Optional[Cache]): Optional cache for past key-value pairs.
             output_attentions (bool): Flag indicating whether to return the attention weights.
             use_cache (bool): Flag indicating whether to use cache for key-value pairs.
+            use_staic_cache(bool): Flag indicating whether to use staic cache for key-value pairs.
+            cache_position (`mindspore.Tensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence
 
         Returns:
             Tuple[mindspore.Tensor, Optional[mindspore.Tensor], Optional[Tuple[mindspore.Tensor]]]:
@@ -658,6 +725,7 @@ class MiniCPMAttention(nn.Module):
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
 
+        
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).swapaxes(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).swapaxes(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).swapaxes(1, 2)
@@ -670,31 +738,33 @@ class MiniCPMAttention(nn.Module):
                     "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
                     "with a layer index."
                 )
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            kv_seq_len += int(past_key_value.get_usable_length(kv_seq_len, self.layer_idx))
         cos, sin = self.rotary_emb(value_states.to(mindspore.float32), seq_len=kv_seq_len)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         attn_weights = ops.matmul(query_states, key_states.swapaxes(2, 3)) / math.sqrt(self.head_dim)
-        if attn_weights.shape != (bsz, self.num_heads, q_len, kv_seq_len):
+        if not use_static_cache and attn_weights.shape != (bsz, self.num_heads, q_len, kv_seq_len):
             raise ValueError(
                 f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
                 f" {attn_weights.shape}"
             )
 
         if attention_mask is not None:
-            if attention_mask.shape != (bsz, 1, q_len, kv_seq_len):
+            causal_mask = ops.narrow(attention_mask, 3, 0, key_states.shape[-2])
+            if not use_static_cache and causal_mask.shape != (bsz, 1, q_len, kv_seq_len):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.shape}"
                 )
-            attn_weights = attn_weights + attention_mask
+            attn_weights = attn_weights + causal_mask
 
         # upcast attention to fp32
         attn_weights = ops.softmax(attn_weights, dim=-1, dtype=mindspore.float32).to(query_states.dtype)
@@ -757,6 +827,8 @@ class MiniCPMDecoderLayer(nn.Module):
             - past_key_value (Tuple[mindspore.Tensor], optional): Cached past key and value projection states.
             - output_attentions (bool, optional): Whether to return attention tensors of all attention layers.
             - use_cache (bool, optional): If True, past key-value states are returned for speeding up decoding.
+            - use_static_cache(bool, optional): If True, past key-value states stored in static cache are 
+                returned for speeding up decoding.
             - kwargs: Additional keyword arguments.
 
             Returns:
@@ -803,6 +875,8 @@ class MiniCPMDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[mindspore.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        use_static_cache: Optional[bool] = False,
+        cache_position: Optional[mindspore.Tensor] = None,
         **kwargs,
     ) -> Tuple[mindspore.Tensor, Optional[Tuple[mindspore.Tensor, mindspore.Tensor]]]:
         """
@@ -817,6 +891,8 @@ class MiniCPMDecoderLayer(nn.Module):
             use_cache (`bool`, *optional*):
                 If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
                 (see `past_key_values`).
+            cache_position (`mindspore.Tensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence
             past_key_value (`Tuple(mindspore.Tensor)`, *optional*): cached past key and value projection states
         """
         if "padding_mask" in kwargs:
@@ -834,6 +910,8 @@ class MiniCPMDecoderLayer(nn.Module):
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
+            use_static_cache=use_static_cache,
+            cache_position=cache_position,
             **kwargs,
         )
 
@@ -881,6 +959,7 @@ class MiniCPMPreTrainedModel(PreTrainedModel):
     _no_split_modules = ["MiniCPMDecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
     _supports_cache_class = True
+    _supports_static_cache = True
 
     def _init_weights(self, cell):
         """
@@ -1002,9 +1081,11 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
         past_key_values: Optional[List[mindspore.Tensor]] = None,
         inputs_embeds: Optional[mindspore.Tensor] = None,
         use_cache: Optional[bool] = None,
+        use_static_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        cache_position: Optional[mindspore.Tensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
         Constructs the MiniCPMModel.
@@ -1020,6 +1101,9 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
             output_attentions (Optional[bool]): Flag indicating whether to output attentions. Default is None.
             output_hidden_states (Optional[bool]): Flag indicating whether to output hidden states. Default is None.
             return_dict (Optional[bool]): Flag indicating whether to return a dictionary. Default is None.
+            cache_position (`mindspore.Tensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence.
+
 
         Returns:
             Union[Tuple, BaseModelOutputWithPast]:
@@ -1050,24 +1134,26 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         past_key_values_length = 0
-        if use_cache:
+        if use_cache and not use_static_cache:
             use_legacy_cache = not isinstance(past_key_values, Cache)
             if use_legacy_cache:
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             past_key_values_length = past_key_values.get_usable_length(seq_length)
+        
+        if cache_position is None:
+            cache_position = ops.arange(
+                past_key_values_length, past_key_values_length + seq_length
+            )
 
         if position_ids is None:
-            position_ids = ops.arange(
-                past_key_values_length, seq_length + past_key_values_length, dtype=mindspore.int64
-            )
-            position_ids = position_ids.unsqueeze(0)
+            position_ids = cache_position.unsqueeze(0)
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.config.scale_emb
 
         # 4d mask is passed through the layers
-        attention_mask = _prepare_4d_causal_attention_mask(
-            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
+        attention_mask = self._update_causal_mask(
+            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
         )
 
         # embed positions
@@ -1078,7 +1164,7 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        for decoder_layer in self.layers:
+        for decoder_layer in self.layers._modules.values():
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -1089,6 +1175,8 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
                 past_key_value=past_key_values,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
+                use_static_cache=use_static_cache,
+                cache_position=cache_position,
             )
 
             hidden_states = layer_outputs[0]
@@ -1106,7 +1194,7 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
             all_hidden_states += (hidden_states,)
 
         next_cache = None
-        if use_cache:
+        if use_cache and not use_static_cache:
             next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
@@ -1117,6 +1205,45 @@ class MiniCPMModel(MiniCPMPreTrainedModel):
             attentions=all_self_attns,
         )
 
+    def _update_causal_mask(
+        self,
+        attention_mask: mindspore.Tensor,
+        input_tensor: mindspore.Tensor,
+        cache_position: mindspore.Tensor,
+        past_key_values: Cache,
+        output_attentions: bool,
+    ):
+        # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
+        # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
+        # to infer the attention mask.
+        cache_length = past_key_values.get_seq_length() if past_key_values is not None else 0
+        using_static_cache = isinstance(past_key_values, StaticCache)
+
+
+        dtype = input_tensor.dtype
+        min_dtype = float(ops.finfo(dtype).min)
+        seq_length = input_tensor.shape[1]
+        if using_static_cache:
+            target_length = past_key_values.get_max_length()
+        else:
+            target_length = (
+                attention_mask.shape[-1]
+                if isinstance(attention_mask, mindspore.Tensor)
+                else cache_length + seq_length + 1
+            )
+
+        # In case the provided `attention` mask is 2D, we generate a causal mask here (4D).
+        causal_mask = _prepare_4d_causal_attention_mask_with_cache_position(
+            attention_mask,
+            sequence_length=seq_length,
+            target_length=target_length,
+            dtype=dtype,
+            min_dtype=min_dtype,
+            cache_position=cache_position,
+            batch_size=input_tensor.shape[0],
+        )
+
+        return causal_mask
 
 class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
     r"""
@@ -1307,9 +1434,11 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
         inputs_embeds: Optional[mindspore.Tensor] = None,
         labels: Optional[mindspore.Tensor] = None,
         use_cache: Optional[bool] = None,
+        use_static_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        cache_position: Optional[mindspore.Tensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1351,9 +1480,11 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
+            use_static_cache=use_static_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            cache_position=cache_position,
         )
 
         hidden_states = outputs[0]
@@ -1389,7 +1520,7 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
         )
 
     def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, cache_position=None, **kwargs
     ):
         """
         Prepare inputs for generation.
@@ -1404,6 +1535,8 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
                 Shape: [batch_size, sequence_length].
             inputs_embeds (torch.Tensor or None): The tensor of embeddings for input tokens.
                 Shape: [batch_size, sequence_length, embedding_dim].
+            cache_position (`mindspore.Tensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence.
 
         Returns:
             dict: A dictionary containing the model inputs including either 'input_ids' or 'inputs_embeds',
@@ -1446,7 +1579,7 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
         position_ids = kwargs.get("position_ids", None)
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids = attention_mask.int().cumsum(-1) - 1
             position_ids = position_ids.masked_fill(attention_mask == 0, 1)
             if past_key_values:
                 position_ids = position_ids[:, -input_ids.shape[1] :]
@@ -1456,6 +1589,25 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
             model_inputs = {"inputs_embeds": inputs_embeds}
         else:
             model_inputs = {"input_ids": input_ids}
+        
+        if isinstance(past_key_values, StaticCache) and attention_mask.ndim == 2:
+            if inputs_embeds is not None:
+                batch_size, seq_length = inputs_embeds.shape
+            else:
+                batch_size, seq_length = input_ids.shape
+
+            dtype = self.lm_head.weight.dtype
+            min_dtype = float(ops.finfo(dtype).min)
+
+            attention_mask = _prepare_4d_causal_attention_mask_with_cache_position(
+                attention_mask,
+                sequence_length=seq_length,
+                target_length=past_key_values.get_max_length(),
+                dtype=dtype,
+                min_dtype=min_dtype,
+                cache_position=cache_position,
+                batch_size=batch_size,
+            )
 
         model_inputs.update(
             {
@@ -1463,6 +1615,7 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
+                "cache_position": cache_position,
             }
         )
         return model_inputs
@@ -1690,7 +1843,12 @@ class MiniCPMForSequenceClassification(MiniCPMPreTrainedModel):
             else:
                 sequence_lengths = -1
 
-        pooled_logits = logits[ops.arange(batch_size), sequence_lengths]
+        if ON_ORANGE_PI:
+            if isinstance(sequence_lengths, mindspore.Tensor):
+                sequence_lengths = sequence_lengths.to(mindspore.int32)
+            pooled_logits = ops.getitem(logits, (ops.arange(batch_size), sequence_lengths))
+        else:
+            pooled_logits = logits[ops.arange(batch_size), sequence_lengths]
 
         loss = None
         if labels is not None:
